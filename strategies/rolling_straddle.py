@@ -50,6 +50,8 @@ class RollingStraddleStrategy(BaseStrategy):
         pe_instr = self._build_option_symbol(atm_strike, "P")
         ce_ltp = snapshot["ce_ltp"]
         pe_ltp = snapshot["pe_ltp"]
+        regime = snapshot.get("regime", "UNKNOWN")
+        
         self.open_positions = [
             {"instrument": ce_instr, "side": "S", "entry_price": ce_ltp, "quantity": self.MESSAGE_LOTS, "mtm": 0.0},
             {"instrument": pe_instr, "side": "S", "entry_price": pe_ltp, "quantity": self.MESSAGE_LOTS, "mtm": 0.0}
@@ -61,6 +63,10 @@ class RollingStraddleStrategy(BaseStrategy):
         self.baseline_pe_ltp = pe_ltp
         self.last_ce_action = "S"
         self.last_pe_action = "S"
+        
+        print(f"[RollingStraddle] Entering straddle: ATM={atm_strike}, CE={ce_ltp:.2f}, "
+              f"PE={pe_ltp:.2f}, premium={ce_ltp + pe_ltp:.2f}, regime={regime}")
+        
         return [
             {"action": "sell", "instrument": ce_instr, "lots": self.MESSAGE_LOTS},
             {"action": "sell", "instrument": pe_instr, "lots": self.MESSAGE_LOTS}
@@ -114,12 +120,16 @@ class RollingStraddleStrategy(BaseStrategy):
                 ce_entry_instr = self._build_option_symbol(snapshot["atm_strike"], "C")
                 orders.append({"action": "buy", "instrument": ce_exit_instr, "lots": self.MESSAGE_LOTS})
                 orders.append({"action": "sell", "instrument": ce_entry_instr, "lots": self.MESSAGE_LOTS})
+                print(f"[RollingStraddle] Rolling CE: {self.last_atm} -> {snapshot['atm_strike']}, "
+                      f"change={ce_change_pct:.2f}%")
                 self.last_ce_action = "S"
             if pe_should_roll:
                 pe_exit_instr = self._build_option_symbol(self.last_atm, "P")
                 pe_entry_instr = self._build_option_symbol(snapshot["atm_strike"], "P")
                 orders.append({"action": "buy", "instrument": pe_exit_instr, "lots": self.MESSAGE_LOTS})
                 orders.append({"action": "sell", "instrument": pe_entry_instr, "lots": self.MESSAGE_LOTS})
+                print(f"[RollingStraddle] Rolling PE: {self.last_atm} -> {snapshot['atm_strike']}, "
+                      f"change={pe_change_pct:.2f}%")
                 self.last_pe_action = "S"
             self.last_atm = snapshot["atm_strike"]
             self.last_roll_time = datetime.datetime.now()
@@ -146,10 +156,15 @@ class RollingStraddleStrategy(BaseStrategy):
         otm_exit_orders = []
         for otm_instr, baseline in list(self.otm_legs.items()):
             curr_ltp = self._get_ltp_for_instrument(snapshot["option_chain"], otm_instr)
-            if baseline <= 0: continue
+            if baseline <= 0: 
+                continue
             change_pct = ((curr_ltp - baseline)/baseline)*100
             if abs(change_pct) >= self.OTM_EXIT_PCT:
+                pnl = (curr_ltp - baseline) * self.MESSAGE_LOTS * self.LOT_SIZE
                 otm_exit_orders.append({"action": "sell", "instrument": otm_instr, "lots": self.MESSAGE_LOTS})
+                print(f"[RollingStraddle] OTM wing emergency exit: {otm_instr}, "
+                      f"change={change_pct:.1f}%, baseline={baseline:.2f}, "
+                      f"curr={curr_ltp:.2f}, pnl={pnl:.2f}")
                 self.otm_legs.pop(otm_instr, None)
         if otm_exit_orders:
             return {"reason": "otm_exit", "orders": otm_exit_orders}
@@ -207,41 +222,134 @@ class RollingStraddleStrategy(BaseStrategy):
         return 0.0
 
     def _should_have_otm_wings(self, snapshot, regime):
-        # Example: add OTM wings if regime is VOLATILE or IV is high
+        """
+        Determine if OTM wings should be added based on regime and IV.
+        Wings provide protection during volatile or trending markets.
+        """
         iv = snapshot.get("iv_estimates", 0)
+        iv_rank = snapshot.get("regime_metrics", {}).get("iv_rank", 50)
+        
+        # Add wings in volatile or trending regimes
         if regime in ["VOLATILE", "TRENDING_UP", "TRENDING_DOWN"]:
+            self.logger.log_filter("otm_decision", snapshot, 
+                f"Adding OTM wings: regime={regime}, iv={iv:.2f}")
             return True
-        if iv and iv > 25:  # Set your risk threshold
+        
+        # Add wings if IV is high (above 25% or IV rank > 70)
+        if iv > 25 or iv_rank > 70:
+            self.logger.log_filter("otm_decision", snapshot,
+                f"Adding OTM wings: high IV={iv:.2f}, iv_rank={iv_rank:.1f}")
             return True
+        
         return False
 
     def _add_otm_wings(self, snapshot):
-        # Enter OTM buy wings based on IV (Iron Fly)
+        """
+        Add OTM buy wings (Iron Fly structure) for downside protection.
+        Uses robust strike selection to handle missing strikes.
+        """
         atm_strike = snapshot["atm_strike"]
         spot = snapshot["spot"]
         iv = snapshot.get("iv_estimates", 15.0)
+        regime = snapshot.get("regime", "CALM")
+        
+        # Calculate OTM distance based on IV and regime
         otm_distance = self._calculate_otm_distance(spot, iv, self.STRIKE_STEP)
-        otm_ce_strike = atm_strike + otm_distance
-        otm_pe_strike = atm_strike - otm_distance
+        
+        # Find available OTM strikes (may not be exact calculated strikes)
+        otm_ce_strike = self._find_available_otm_strike(
+            snapshot["option_chain"], atm_strike + otm_distance, "C", atm_strike)
+        otm_pe_strike = self._find_available_otm_strike(
+            snapshot["option_chain"], atm_strike - otm_distance, "P", atm_strike)
+        
         otm_ce_instr = self._build_option_symbol(otm_ce_strike, "C")
         otm_pe_instr = self._build_option_symbol(otm_pe_strike, "P")
+        
+        # Get LTPs with defensive handling
         otm_ce_ltp = self._get_ltp_for_instrument(snapshot["option_chain"], otm_ce_instr)
         otm_pe_ltp = self._get_ltp_for_instrument(snapshot["option_chain"], otm_pe_instr)
+        
         otm_orders = []
-        if otm_ce_ltp > 0 and otm_ce_instr not in self.otm_legs:
+        
+        # Add CE wing - attempt even if LTP==0 but log warning
+        if otm_ce_instr not in self.otm_legs:
+            if otm_ce_ltp == 0:
+                print(f"[RollingStraddle] Warning: OTM CE {otm_ce_instr} has LTP=0, attempting order anyway")
             otm_orders.append({"action": "buy", "instrument": otm_ce_instr, "lots": self.MESSAGE_LOTS})
-            self.otm_legs[otm_ce_instr] = otm_ce_ltp
-        if otm_pe_ltp > 0 and otm_pe_instr not in self.otm_legs:
+            self.otm_legs[otm_ce_instr] = max(otm_ce_ltp, 1.0)  # Store at least 1 for tracking
+            print(f"[RollingStraddle] Adding OTM CE wing: {otm_ce_instr} @ {otm_ce_ltp:.2f}, "
+                  f"strike={otm_ce_strike}, regime={regime}, iv={iv:.2f}")
+        
+        # Add PE wing - attempt even if LTP==0 but log warning
+        if otm_pe_instr not in self.otm_legs:
+            if otm_pe_ltp == 0:
+                print(f"[RollingStraddle] Warning: OTM PE {otm_pe_instr} has LTP=0, attempting order anyway")
             otm_orders.append({"action": "buy", "instrument": otm_pe_instr, "lots": self.MESSAGE_LOTS})
-            self.otm_legs[otm_pe_instr] = otm_pe_ltp
+            self.otm_legs[otm_pe_instr] = max(otm_pe_ltp, 1.0)  # Store at least 1 for tracking
+            print(f"[RollingStraddle] Adding OTM PE wing: {otm_pe_instr} @ {otm_pe_ltp:.2f}, "
+                  f"strike={otm_pe_strike}, regime={regime}, iv={iv:.2f}")
+        
         return otm_orders
+    
+    def _find_available_otm_strike(self, option_chain, target_strike, opt_type, atm_strike):
+        """
+        Find the nearest available strike in option chain to target_strike.
+        If exact strike not available, find closest one in the correct direction (OTM).
+        
+        Args:
+            option_chain: List of option data from API
+            target_strike: Desired strike price
+            opt_type: "C" for call or "P" for put
+            atm_strike: Current ATM strike for reference
+            
+        Returns:
+            Available strike price closest to target
+        """
+        available_strikes = []
+        
+        for item in option_chain:
+            strike = item.get("strike_price", item.get("strike", 0))
+            if strike:
+                try:
+                    strike = float(strike)
+                    # For calls, only consider strikes >= ATM
+                    # For puts, only consider strikes <= ATM
+                    if opt_type == "C" and strike >= atm_strike:
+                        available_strikes.append(strike)
+                    elif opt_type == "P" and strike <= atm_strike:
+                        available_strikes.append(strike)
+                except (ValueError, TypeError):
+                    continue
+        
+        if not available_strikes:
+            print(f"[RollingStraddle] Warning: No available {opt_type} strikes found, using target={target_strike}")
+            return target_strike
+        
+        # Find closest available strike to target
+        closest_strike = min(available_strikes, key=lambda x: abs(x - target_strike))
+        
+        if closest_strike != target_strike:
+            print(f"[RollingStraddle] Adjusted {opt_type} strike from {target_strike} to {closest_strike}")
+        
+        return closest_strike
 
     def _remove_otm_wings(self, snapshot):
-        # Exit OTM wings
+        """
+        Exit OTM wings - sell the bought protection.
+        """
         otm_orders = []
+        regime = snapshot.get("regime", "CALM")
+        
         for otm_instr in list(self.otm_legs.keys()):
+            entry_price = self.otm_legs[otm_instr]
+            curr_ltp = self._get_ltp_for_instrument(snapshot["option_chain"], otm_instr)
+            pnl = (curr_ltp - entry_price) * self.MESSAGE_LOTS * self.LOT_SIZE
+            
             otm_orders.append({"action": "sell", "instrument": otm_instr, "lots": self.MESSAGE_LOTS})
+            print(f"[RollingStraddle] Removing OTM wing: {otm_instr}, "
+                  f"entry={entry_price:.2f}, exit={curr_ltp:.2f}, pnl={pnl:.2f}, regime={regime}")
             self.otm_legs.pop(otm_instr, None)
+        
         return otm_orders
 
     def _is_straddle_allowed(self, snapshot, regime):
