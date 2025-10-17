@@ -1,0 +1,27 @@
+global:
+  poll_interval: 30
+  allow_simultaneous: false
+  max_daily_loss: 0.03
+  account_equity: 1000000
+
+vol_filter:
+  alpha: 0.25
+  sigma_factor: 1.0
+  min_dte: 0.125
+
+rolling_straddle:
+  roll_pct: 5.0
+  stoploss_per_lot: 3000
+  target_per_lot: 10000
+
+iron_fly:
+  wing_factor: 1.0
+  otm_exit_pct: 25.0
+  stoploss_per_lot: 3000
+  target_per_lot: 10000
+
+upstox:
+  access_token: "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJIVTQyNjYiLCJqdGkiOiI2OGYxYWVjNGExNDIyOTcwNTY5OTg1YzkiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlhdCI6MTc2MDY2OTM4MCwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxNzYwNzM4NDAwfQ.TtivAUosZHAjTinNZiRvXfR6ZIBWrj-YRMSErgPXulI"
+  expiry_date: "2025-10-23"
+  url: "https://api.upstox.com/v2/option/chain"
+  webhook_url: "https://orders.algotest.in/webhook/tv/tk-trade?token=pLgMGjDyTluW1JkS4hbuN1HYCqGMmElv&tag=68f1af24611676c1c94ce1b0"
