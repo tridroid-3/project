@@ -101,11 +101,24 @@ cp config/config.example.yaml config/config.yaml
 nano config/config.yaml
 ```
 
+**IMPORTANT SECURITY NOTE**: The `config/config.yaml` file should contain your private credentials and should NOT be committed to the repository. The `.gitignore` file is configured to exclude it. Always use `config/config.example.yaml` as a template.
+
 Required changes:
 - Set your Upstox `access_token`
 - Set your `webhook_url`
 - Adjust `expiry_date` for current expiry
 - Verify `instrument_key` matches your trading instrument
+
+### 1a. Using Environment Variables (Recommended)
+
+For enhanced security, consider loading sensitive credentials from environment variables:
+
+```bash
+export UPSTOX_ACCESS_TOKEN="your_token_here"
+export WEBHOOK_URL="your_webhook_url_here"
+```
+
+Then update your config to reference them (requires code modification to read from env vars).
 
 ### 2. Restart Orchestrator
 
