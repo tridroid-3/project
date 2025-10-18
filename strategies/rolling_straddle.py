@@ -1,6 +1,10 @@
 from strategies.base_strategy import BaseStrategy
 import datetime
 import re
+import logging
+import copy
+
+logger = logging.getLogger(__name__)
 
 class RollingStraddleStrategy(BaseStrategy):
     def __init__(self, config, logger):
@@ -64,8 +68,8 @@ class RollingStraddleStrategy(BaseStrategy):
         self.last_ce_action = "S"
         self.last_pe_action = "S"
         
-        print(f"[RollingStraddle] Entering straddle: ATM={atm_strike}, CE={ce_ltp:.2f}, "
-              f"PE={pe_ltp:.2f}, premium={ce_ltp + pe_ltp:.2f}, regime={regime}")
+        logger.info(f"[RollingStraddle] Entering straddle: ATM={atm_strike}, CE={ce_ltp:.2f}, "
+                    f"PE={pe_ltp:.2f}, premium={ce_ltp + pe_ltp:.2f}, regime={regime}")
         
         return [
             {"action": "sell", "instrument": ce_instr, "lots": self.MESSAGE_LOTS},
@@ -120,16 +124,16 @@ class RollingStraddleStrategy(BaseStrategy):
                 ce_entry_instr = self._build_option_symbol(snapshot["atm_strike"], "C")
                 orders.append({"action": "buy", "instrument": ce_exit_instr, "lots": self.MESSAGE_LOTS})
                 orders.append({"action": "sell", "instrument": ce_entry_instr, "lots": self.MESSAGE_LOTS})
-                print(f"[RollingStraddle] Rolling CE: {self.last_atm} -> {snapshot['atm_strike']}, "
-                      f"change={ce_change_pct:.2f}%")
+                logger.info(f"[RollingStraddle] Rolling CE: {self.last_atm} -> {snapshot['atm_strike']}, "
+                           f"change={ce_change_pct:.2f}%")
                 self.last_ce_action = "S"
             if pe_should_roll:
                 pe_exit_instr = self._build_option_symbol(self.last_atm, "P")
                 pe_entry_instr = self._build_option_symbol(snapshot["atm_strike"], "P")
                 orders.append({"action": "buy", "instrument": pe_exit_instr, "lots": self.MESSAGE_LOTS})
                 orders.append({"action": "sell", "instrument": pe_entry_instr, "lots": self.MESSAGE_LOTS})
-                print(f"[RollingStraddle] Rolling PE: {self.last_atm} -> {snapshot['atm_strike']}, "
-                      f"change={pe_change_pct:.2f}%")
+                logger.info(f"[RollingStraddle] Rolling PE: {self.last_atm} -> {snapshot['atm_strike']}, "
+                           f"change={pe_change_pct:.2f}%")
                 self.last_pe_action = "S"
             self.last_atm = snapshot["atm_strike"]
             self.last_roll_time = datetime.datetime.now()
@@ -162,9 +166,9 @@ class RollingStraddleStrategy(BaseStrategy):
             if abs(change_pct) >= self.OTM_EXIT_PCT:
                 pnl = (curr_ltp - baseline) * self.MESSAGE_LOTS * self.LOT_SIZE
                 otm_exit_orders.append({"action": "sell", "instrument": otm_instr, "lots": self.MESSAGE_LOTS})
-                print(f"[RollingStraddle] OTM wing emergency exit: {otm_instr}, "
-                      f"change={change_pct:.1f}%, baseline={baseline:.2f}, "
-                      f"curr={curr_ltp:.2f}, pnl={pnl:.2f}")
+                logger.info(f"[RollingStraddle] OTM wing emergency exit: {otm_instr}, "
+                           f"change={change_pct:.1f}%, baseline={baseline:.2f}, "
+                           f"curr={curr_ltp:.2f}, pnl={pnl:.2f}")
                 self.otm_legs.pop(otm_instr, None)
         if otm_exit_orders:
             return {"reason": "otm_exit", "orders": otm_exit_orders}
@@ -187,7 +191,8 @@ class RollingStraddleStrategy(BaseStrategy):
         return orders
 
     def get_open_positions(self):
-        return self.open_positions
+        """Return a copy of open positions to prevent external modification."""
+        return copy.deepcopy(self.open_positions)
 
     # --- Helpers ---
     def _build_option_symbol(self, strike, opt_type):
@@ -274,20 +279,20 @@ class RollingStraddleStrategy(BaseStrategy):
         # Add CE wing - attempt even if LTP==0 but log warning
         if otm_ce_instr not in self.otm_legs:
             if otm_ce_ltp == 0:
-                print(f"[RollingStraddle] Warning: OTM CE {otm_ce_instr} has LTP=0, attempting order anyway")
+                logger.warning(f"[RollingStraddle] OTM CE {otm_ce_instr} has LTP=0, attempting order anyway")
             otm_orders.append({"action": "buy", "instrument": otm_ce_instr, "lots": self.MESSAGE_LOTS})
             self.otm_legs[otm_ce_instr] = max(otm_ce_ltp, 1.0)  # Store at least 1 for tracking
-            print(f"[RollingStraddle] Adding OTM CE wing: {otm_ce_instr} @ {otm_ce_ltp:.2f}, "
-                  f"strike={otm_ce_strike}, regime={regime}, iv={iv:.2f}")
+            logger.info(f"[RollingStraddle] Adding OTM CE wing: {otm_ce_instr} @ {otm_ce_ltp:.2f}, "
+                       f"strike={otm_ce_strike}, regime={regime}, iv={iv:.2f}")
         
         # Add PE wing - attempt even if LTP==0 but log warning
         if otm_pe_instr not in self.otm_legs:
             if otm_pe_ltp == 0:
-                print(f"[RollingStraddle] Warning: OTM PE {otm_pe_instr} has LTP=0, attempting order anyway")
+                logger.warning(f"[RollingStraddle] OTM PE {otm_pe_instr} has LTP=0, attempting order anyway")
             otm_orders.append({"action": "buy", "instrument": otm_pe_instr, "lots": self.MESSAGE_LOTS})
             self.otm_legs[otm_pe_instr] = max(otm_pe_ltp, 1.0)  # Store at least 1 for tracking
-            print(f"[RollingStraddle] Adding OTM PE wing: {otm_pe_instr} @ {otm_pe_ltp:.2f}, "
-                  f"strike={otm_pe_strike}, regime={regime}, iv={iv:.2f}")
+            logger.info(f"[RollingStraddle] Adding OTM PE wing: {otm_pe_instr} @ {otm_pe_ltp:.2f}, "
+                       f"strike={otm_pe_strike}, regime={regime}, iv={iv:.2f}")
         
         return otm_orders
     
@@ -322,14 +327,14 @@ class RollingStraddleStrategy(BaseStrategy):
                     continue
         
         if not available_strikes:
-            print(f"[RollingStraddle] Warning: No available {opt_type} strikes found, using target={target_strike}")
+            logger.warning(f"[RollingStraddle] No available {opt_type} strikes found, using target={target_strike}")
             return target_strike
         
         # Find closest available strike to target
         closest_strike = min(available_strikes, key=lambda x: abs(x - target_strike))
         
         if closest_strike != target_strike:
-            print(f"[RollingStraddle] Adjusted {opt_type} strike from {target_strike} to {closest_strike}")
+            logger.info(f"[RollingStraddle] Adjusted {opt_type} strike from {target_strike} to {closest_strike}")
         
         return closest_strike
 
@@ -346,8 +351,8 @@ class RollingStraddleStrategy(BaseStrategy):
             pnl = (curr_ltp - entry_price) * self.MESSAGE_LOTS * self.LOT_SIZE
             
             otm_orders.append({"action": "sell", "instrument": otm_instr, "lots": self.MESSAGE_LOTS})
-            print(f"[RollingStraddle] Removing OTM wing: {otm_instr}, "
-                  f"entry={entry_price:.2f}, exit={curr_ltp:.2f}, pnl={pnl:.2f}, regime={regime}")
+            logger.info(f"[RollingStraddle] Removing OTM wing: {otm_instr}, "
+                       f"entry={entry_price:.2f}, exit={curr_ltp:.2f}, pnl={pnl:.2f}, regime={regime}")
             self.otm_legs.pop(otm_instr, None)
         
         return otm_orders
