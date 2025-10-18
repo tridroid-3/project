@@ -9,6 +9,28 @@ vol_filter:
   sigma_factor: 1.0
   min_dte: 0.125
 
+# Regime classification thresholds
+regime:
+  # Historical data lengths
+  iv_history_length: 50
+  
+  # Indicator periods
+  atr_period: 14
+  adx_period: 14
+  bb_period: 20
+  bb_std: 2.0
+  sma_period: 20
+  sma_lookback: 5
+  
+  # Classification thresholds
+  atr_high_threshold: 2.0
+  adx_trending_threshold: 25
+  adx_strong_threshold: 40
+  bb_width_high_threshold: 0.05
+  sma_slope_threshold: 0.5
+  iv_rank_high: 70
+  iv_rank_low: 30
+
 rolling_straddle:
   roll_pct: 5.0
   stoploss_per_lot: 3000
@@ -20,8 +42,20 @@ iron_fly:
   stoploss_per_lot: 3000
   target_per_lot: 10000
 
+# Global strategy parameters
+STRIKE_STEP: 100
+LOT_SIZE: 20
+MESSAGE_LOTS: 1
+BUFFER: 10
+SYMBOL: "SENSEX"
+
 upstox:
-  access_token: "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiJIVTQyNjYiLCJqdGkiOiI2OGYxYWVjNGExNDIyOTcwNTY5OTg1YzkiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlhdCI6MTc2MDY2OTM4MCwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxNzYwNzM4NDAwfQ.TtivAUosZHAjTinNZiRvXfR6ZIBWrj-YRMSErgPXulI"
+  access_token: "YOUR_ACCESS_TOKEN_HERE"
   expiry_date: "2025-10-23"
+  instrument_key: "BSE_INDEX|SENSEX"
   url: "https://api.upstox.com/v2/option/chain"
-  webhook_url: "https://orders.algotest.in/webhook/tv/tk-trade?token=pLgMGjDyTluW1JkS4hbuN1HYCqGMmElv&tag=68f1af24611676c1c94ce1b0"
+  candles_url: "https://api.upstox.com/v2/historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}"
+  webhook_url: "YOUR_WEBHOOK_URL_HERE"
+
+# Logging configuration
+log_dir: "data/logs/"

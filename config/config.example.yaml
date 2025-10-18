@@ -1,0 +1,65 @@
+global:
+  poll_interval: 30  # Seconds between each tick
+  allow_simultaneous: false  # Only allow one strategy at a time
+  max_daily_loss: 0.03  # Maximum daily loss as fraction of equity
+  account_equity: 1000000  # Account size for risk calculations
+
+# Volatility filter configuration
+vol_filter:
+  alpha: 0.25  # EWMA smoothing factor
+  sigma_factor: 1.0  # Volatility threshold multiplier
+  min_dte: 0.125  # Minimum days to expiry (3 hours)
+
+# Regime classification thresholds
+regime:
+  # Historical data lengths
+  iv_history_length: 50  # Number of IV observations to keep
+  
+  # Indicator periods
+  atr_period: 14
+  adx_period: 14
+  bb_period: 20
+  bb_std: 2.0
+  sma_period: 20
+  sma_lookback: 5
+  
+  # Classification thresholds
+  atr_high_threshold: 2.0  # % of close price
+  adx_trending_threshold: 25  # ADX above this indicates trend
+  adx_strong_threshold: 40  # ADX above this indicates strong trend
+  bb_width_high_threshold: 0.05  # 5% BB width indicates high volatility
+  sma_slope_threshold: 0.5  # % change indicating trend
+  iv_rank_high: 70  # IV rank percentile for high volatility
+  iv_rank_low: 30  # IV rank percentile for low volatility
+
+# Rolling straddle strategy configuration
+rolling_straddle:
+  roll_pct: 5.0  # Percentage change to trigger roll
+  stoploss_per_lot: 3000  # Stop loss per lot in currency units
+  target_per_lot: 10000  # Target profit per lot
+
+# Iron fly OTM wings configuration
+iron_fly:
+  wing_factor: 1.0  # Multiplier for OTM distance calculation
+  otm_exit_pct: 25.0  # Exit OTM wings if they move this % from entry
+  stoploss_per_lot: 3000
+  target_per_lot: 10000
+
+# Global strategy parameters
+STRIKE_STEP: 100  # Strike price step size
+LOT_SIZE: 20  # Size of one lot
+MESSAGE_LOTS: 1  # Number of lots per order
+BUFFER: 10  # Buffer distance for roll triggers
+SYMBOL: "SENSEX"  # Trading symbol
+
+# Upstox API configuration
+upstox:
+  access_token: "YOUR_ACCESS_TOKEN_HERE"  # Replace with your access token
+  expiry_date: "2025-10-23"  # Option expiry date (YYYY-MM-DD)
+  instrument_key: "BSE_INDEX|SENSEX"  # Instrument key for underlying
+  url: "https://api.upstox.com/v2/option/chain"  # Option chain API endpoint
+  candles_url: "https://api.upstox.com/v2/historical-candle/{instrument_key}/{interval}/{to_date}/{from_date}"
+  webhook_url: "YOUR_WEBHOOK_URL_HERE"  # Replace with your webhook URL
+
+# Logging configuration
+log_dir: "data/logs/"  # Directory for log files
