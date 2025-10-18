@@ -38,15 +38,28 @@ class ExecutionAdapter:
         self._validate_webhook_url()
 
     def _validate_webhook_url(self):
-        """Validate that webhook URL contains a valid 24-character hex tag."""
+        """
+        Validate that webhook URL contains a valid 24-character hex tag.
+        
+        Expected format: https://example.com/webhook?token=XXX&tag=YYYYYYYYYYYYYYYYYYYYYYYY
+        Where tag is exactly 24 hexadecimal characters (0-9, a-f, A-F).
+        """
         if not self.webhook_url:
             logger.error("No webhook URL configured!")
             return False
         
         # Extract tag parameter from URL
-        tag_match = re.search(r'[?&]tag=([a-fA-F0-9]{24})', self.webhook_url)
+        tag_match = re.search(r'[?&]tag=([a-fA-F0-9]{24})(?:&|$)', self.webhook_url)
         if not tag_match:
-            logger.error(f"Invalid webhook URL: missing valid 24-character hex tag. URL: {self.webhook_url}")
+            # More helpful error message
+            tag_attempt = re.search(r'[?&]tag=([a-fA-F0-9]+)', self.webhook_url)
+            if tag_attempt:
+                tag_value = tag_attempt.group(1)
+                logger.error(f"Invalid webhook URL: tag must be exactly 24 hexadecimal characters, "
+                           f"found {len(tag_value)} characters: {tag_value}")
+            else:
+                logger.error(f"Invalid webhook URL: missing 'tag' parameter with 24-character hex value. "
+                           f"Expected format: ?tag=YYYYYYYYYYYYYYYYYYYYYYYY (24 hex chars)")
             return False
         
         logger.info(f"Webhook URL validated with tag: {tag_match.group(1)}")
@@ -86,19 +99,31 @@ class ExecutionAdapter:
             self._send_alert(f"🔴 Circuit breaker OPEN - {self.consecutive_failures} consecutive failures")
     
     def _send_alert(self, message):
-        """Send alert via configured channels (Telegram/Slack)."""
+        """
+        Send alert via configured channels (Telegram/Slack).
+        Note: Credentials are not logged in error messages for security.
+        """
         alert_config = self.config.get('alerting', {})
         if not alert_config.get('enabled', False):
             return
         
         # Telegram alerting
         telegram = alert_config.get('telegram', {})
-        if telegram.get('bot_token') and telegram.get('chat_id'):
-            try:
-                url = f"https://api.telegram.org/bot{telegram['bot_token']}/sendMessage"
-                requests.post(url, json={"chat_id": telegram['chat_id'], "text": message}, timeout=5)
-            except Exception as e:
-                logger.error(f"Failed to send Telegram alert: {e}")
+        bot_token = telegram.get('bot_token', '')
+        chat_id = telegram.get('chat_id', '')
+        
+        if bot_token and chat_id:
+            # Basic validation of bot token format (should start with digits, contain colon)
+            if ':' not in bot_token or not bot_token.split(':')[0].isdigit():
+                logger.warning("Telegram bot token format appears invalid (expected format: '123456:ABC-DEF...'), skipping alert")
+            else:
+                try:
+                    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+                    response = requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=5)
+                    if response.status_code != 200:
+                        logger.error(f"Telegram alert failed with status {response.status_code}")
+                except Exception as e:
+                    logger.error(f"Failed to send Telegram alert: {type(e).__name__}")
         
         # Slack alerting
         slack = alert_config.get('slack', {})
@@ -106,7 +131,7 @@ class ExecutionAdapter:
             try:
                 requests.post(slack['webhook_url'], json={"text": message}, timeout=5)
             except Exception as e:
-                logger.error(f"Failed to send Slack alert: {e}")
+                logger.error(f"Failed to send Slack alert: {type(e).__name__}")
     
     def send_orders(self, orders, tag=""):
         """
@@ -154,12 +179,14 @@ class ExecutionAdapter:
             idempotency_key = f"{tag}-{i}-{uuid.uuid4().hex[:8]}"
             
             # Build order as JSON string
+            # Use timezone-aware UTC timestamp for consistency
+            from datetime import timezone
             order_dict = {
                 "instrument": order["instrument"],
                 "action": order["action"],
                 "lots": order.get("lots", order.get("quantity", 1)),
                 "idempotency_key": idempotency_key,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
             
             # Stringify as JSON for payload
@@ -202,10 +229,12 @@ class ExecutionAdapter:
                         responses.append(response_data)
                         
                         # Track pending order for fill confirmation
+                        # Use timezone-aware UTC timestamp
+                        from datetime import timezone
                         self.pending_orders[idempotency_key] = {
                             "order": order,
                             "order_id": order_id,
-                            "timestamp": datetime.utcnow().isoformat(),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
                             "status": "pending"
                         }
                         
@@ -312,7 +341,9 @@ class ExecutionAdapter:
             order_info = self.pending_orders.pop(idempotency_key)
             order_info['status'] = 'filled'
             order_info['fill_price'] = fill_price
-            order_info['fill_time'] = fill_time or datetime.utcnow().isoformat()
+            # Use timezone-aware UTC timestamp
+            from datetime import timezone
+            order_info['fill_time'] = fill_time or datetime.now(timezone.utc).isoformat()
             self.filled_orders[idempotency_key] = order_info
             logger.info(f"Order filled: {idempotency_key}, price={fill_price}")
             return True

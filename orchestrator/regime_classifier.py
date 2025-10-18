@@ -14,6 +14,11 @@ class RegimeClassifier:
     def __init__(self, config):
         self.config = config
         regime_config = config.get('regime', {})
+    
+    @staticmethod
+    def _safe_value(value, default=0):
+        """Return default if value is NaN, otherwise return value."""
+        return default if pd.isna(value) else value
         
         # Indicator periods
         self.atr_period = regime_config.get('atr_period', 14)
@@ -59,8 +64,11 @@ class RegimeClassifier:
         if ohlc_df is not None and len(ohlc_df) >= self.atr_period:
             atr_value = self._calculate_atr(ohlc_df)
             close_value = ohlc_df['close'].iloc[-1]
-            # Handle NaN values
-            if pd.isna(atr_value) or pd.isna(close_value) or close_value == 0:
+            # Handle NaN values using helper
+            atr_value = self._safe_value(atr_value, 0)
+            close_value = self._safe_value(close_value, 0)
+            
+            if close_value == 0:
                 metrics['atr'] = 0
                 metrics['atr_pct'] = 0
             else:
@@ -70,12 +78,12 @@ class RegimeClassifier:
             metrics['atr'] = 0
             metrics['atr_pct'] = 0
         
-        # Calculate ADX - use .iloc[-1] and handle NaN
+        # Calculate ADX - use .iloc[-1] and handle NaN using helper
         if ohlc_df is not None and len(ohlc_df) >= self.adx_period + 1:
             adx, plus_di, minus_di = self._calculate_adx(ohlc_df)
-            metrics['adx'] = 0 if pd.isna(adx) else adx
-            metrics['plus_di'] = 0 if pd.isna(plus_di) else plus_di
-            metrics['minus_di'] = 0 if pd.isna(minus_di) else minus_di
+            metrics['adx'] = self._safe_value(adx, 0)
+            metrics['plus_di'] = self._safe_value(plus_di, 0)
+            metrics['minus_di'] = self._safe_value(minus_di, 0)
         else:
             metrics['adx'] = 0
             metrics['plus_di'] = 0
@@ -84,27 +92,27 @@ class RegimeClassifier:
         # Calculate Bollinger Band Width - use .iloc[-1] and handle NaN
         if ohlc_df is not None and len(ohlc_df) >= self.bb_period:
             bb_width = self._calculate_bb_width(ohlc_df)
-            metrics['bb_width'] = 0 if pd.isna(bb_width) else bb_width
+            metrics['bb_width'] = self._safe_value(bb_width, 0)
         else:
             metrics['bb_width'] = 0
         
         # Calculate SMA Slope - use .iloc[-1] and handle NaN
         if ohlc_df is not None and len(ohlc_df) >= self.sma_period + self.sma_lookback:
             sma_slope = self._calculate_sma_slope(ohlc_df)
-            metrics['sma_slope'] = 0 if pd.isna(sma_slope) else sma_slope
+            metrics['sma_slope'] = self._safe_value(sma_slope, 0)
         else:
             metrics['sma_slope'] = 0
         
         # Calculate IV Rank - use .iloc[-1] and handle NaN
         if iv_series is not None and len(iv_series) >= 10:
             iv_rank = self._calculate_iv_rank(iv_series)
-            metrics['iv_rank'] = 50 if pd.isna(iv_rank) else iv_rank
+            metrics['iv_rank'] = self._safe_value(iv_rank, 50)
         else:
             metrics['iv_rank'] = 50  # Neutral default
         
-        # Current IV - handle NaN
+        # Current IV - handle NaN using helper
         current_iv = snapshot.get('iv_estimates', 0)
-        metrics['current_iv'] = 0 if pd.isna(current_iv) else current_iv
+        metrics['current_iv'] = self._safe_value(current_iv, 0)
         
         # Classify regime based on metrics
         regime = self._classify_regime(metrics)
