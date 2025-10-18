@@ -14,11 +14,6 @@ class RegimeClassifier:
     def __init__(self, config):
         self.config = config
         regime_config = config.get('regime', {})
-    
-    @staticmethod
-    def _safe_value(value, default=0):
-        """Return default if value is NaN, otherwise return value."""
-        return default if pd.isna(value) else value
         
         # Indicator periods
         self.atr_period = regime_config.get('atr_period', 14)
@@ -36,6 +31,11 @@ class RegimeClassifier:
         self.sma_slope_threshold = regime_config.get('sma_slope_threshold', 0.5)  # % change
         self.iv_rank_high = regime_config.get('iv_rank_high', 70)
         self.iv_rank_low = regime_config.get('iv_rank_low', 30)
+    
+    @staticmethod
+    def _safe_value(value, default=0):
+        """Return default if value is NaN, otherwise return value."""
+        return default if pd.isna(value) else value
 
     def classify(self, snapshot):
         """
