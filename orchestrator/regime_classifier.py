@@ -31,13 +31,18 @@ class RegimeClassifier:
         self.sma_slope_threshold = regime_config.get('sma_slope_threshold', 0.5)  # % change
         self.iv_rank_high = regime_config.get('iv_rank_high', 70)
         self.iv_rank_low = regime_config.get('iv_rank_low', 30)
+    
+    @staticmethod
+    def _safe_value(value, default=0):
+        """Return default if value is NaN, otherwise return value."""
+        return default if pd.isna(value) else value
 
     def classify(self, snapshot):
         """
         Classify market regime based on snapshot data.
         
         Returns:
-            tuple: (regime_label, metrics_dict)
+            dict: {"regime": regime_label, "regime_metrics": metrics_dict}
             
         Regime labels:
             - CALM: Low volatility, no strong trend
@@ -47,7 +52,7 @@ class RegimeClassifier:
             - TRANSITION: Mixed signals, changing regime
         """
         if not snapshot:
-            return "UNKNOWN", {}
+            return {"regime": "UNKNOWN", "regime_metrics": {}}
         
         ohlc_df = snapshot.get('ohlc_df')
         iv_series = snapshot.get('iv_series')
@@ -55,42 +60,59 @@ class RegimeClassifier:
         # Calculate metrics
         metrics = {}
         
-        # Calculate ATR
+        # Calculate ATR - use .iloc[-1] and handle NaN safely
         if ohlc_df is not None and len(ohlc_df) >= self.atr_period:
-            metrics['atr'] = self._calculate_atr(ohlc_df)
-            metrics['atr_pct'] = (metrics['atr'] / ohlc_df['close'].iloc[-1] * 100) if len(ohlc_df) > 0 else 0
+            atr_value = self._calculate_atr(ohlc_df)
+            close_value = ohlc_df['close'].iloc[-1]
+            # Handle NaN values using helper
+            atr_value = self._safe_value(atr_value, 0)
+            close_value = self._safe_value(close_value, 0)
+            
+            if close_value == 0:
+                metrics['atr'] = 0
+                metrics['atr_pct'] = 0
+            else:
+                metrics['atr'] = atr_value
+                metrics['atr_pct'] = (atr_value / close_value * 100)
         else:
             metrics['atr'] = 0
             metrics['atr_pct'] = 0
         
-        # Calculate ADX
+        # Calculate ADX - use .iloc[-1] and handle NaN using helper
         if ohlc_df is not None and len(ohlc_df) >= self.adx_period + 1:
-            metrics['adx'], metrics['plus_di'], metrics['minus_di'] = self._calculate_adx(ohlc_df)
+            adx, plus_di, minus_di = self._calculate_adx(ohlc_df)
+            metrics['adx'] = self._safe_value(adx, 0)
+            metrics['plus_di'] = self._safe_value(plus_di, 0)
+            metrics['minus_di'] = self._safe_value(minus_di, 0)
         else:
             metrics['adx'] = 0
             metrics['plus_di'] = 0
             metrics['minus_di'] = 0
         
-        # Calculate Bollinger Band Width
+        # Calculate Bollinger Band Width - use .iloc[-1] and handle NaN
         if ohlc_df is not None and len(ohlc_df) >= self.bb_period:
-            metrics['bb_width'] = self._calculate_bb_width(ohlc_df)
+            bb_width = self._calculate_bb_width(ohlc_df)
+            metrics['bb_width'] = self._safe_value(bb_width, 0)
         else:
             metrics['bb_width'] = 0
         
-        # Calculate SMA Slope
+        # Calculate SMA Slope - use .iloc[-1] and handle NaN
         if ohlc_df is not None and len(ohlc_df) >= self.sma_period + self.sma_lookback:
-            metrics['sma_slope'] = self._calculate_sma_slope(ohlc_df)
+            sma_slope = self._calculate_sma_slope(ohlc_df)
+            metrics['sma_slope'] = self._safe_value(sma_slope, 0)
         else:
             metrics['sma_slope'] = 0
         
-        # Calculate IV Rank
+        # Calculate IV Rank - use .iloc[-1] and handle NaN
         if iv_series is not None and len(iv_series) >= 10:
-            metrics['iv_rank'] = self._calculate_iv_rank(iv_series)
+            iv_rank = self._calculate_iv_rank(iv_series)
+            metrics['iv_rank'] = self._safe_value(iv_rank, 50)
         else:
             metrics['iv_rank'] = 50  # Neutral default
         
-        # Current IV
-        metrics['current_iv'] = snapshot.get('iv_estimates', 0)
+        # Current IV - handle NaN using helper
+        current_iv = snapshot.get('iv_estimates', 0)
+        metrics['current_iv'] = self._safe_value(current_iv, 0)
         
         # Classify regime based on metrics
         regime = self._classify_regime(metrics)
@@ -99,7 +121,7 @@ class RegimeClassifier:
               f"ADX={metrics['adx']:.1f}, BB_Width={metrics['bb_width']:.3f}, "
               f"SMA_Slope={metrics['sma_slope']:.2f}%, IV_Rank={metrics['iv_rank']:.1f}")
         
-        return regime, metrics
+        return {"regime": regime, "regime_metrics": metrics}
     
     def _calculate_atr(self, df):
         """Calculate Average True Range"""
@@ -181,11 +203,20 @@ class RegimeClassifier:
         if len(iv_series) == 0:
             return 50.0
         
+        # Use .iloc[-1] for latest value and handle NaN
         current_iv = iv_series.iloc[-1]
-        iv_min = iv_series.min()
-        iv_max = iv_series.max()
+        if pd.isna(current_iv):
+            return 50.0
         
-        if iv_max == iv_min:
+        # Filter out NaN values before min/max
+        valid_series = iv_series.dropna()
+        if len(valid_series) == 0:
+            return 50.0
+        
+        iv_min = valid_series.min()
+        iv_max = valid_series.max()
+        
+        if iv_max == iv_min or pd.isna(iv_min) or pd.isna(iv_max):
             return 50.0
         
         iv_rank = ((current_iv - iv_min) / (iv_max - iv_min)) * 100

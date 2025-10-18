@@ -1,5 +1,7 @@
 import time
+import logging
 from datetime import datetime, date, time as dt_time, timedelta
+from zoneinfo import ZoneInfo
 from orchestrator.preprocessor import Preprocessor
 from orchestrator.regime_classifier import RegimeClassifier
 from orchestrator.execution_adapter import ExecutionAdapter
@@ -7,6 +9,8 @@ from orchestrator.logger import Logger
 from orchestrator.risk_manager import RiskManager
 from orchestrator.volatility_filter import VolatilityFilter
 from strategies.rolling_straddle import RollingStraddleStrategy
+
+logger = logging.getLogger(__name__)
 
 class MasterOrchestrator:
     def __init__(self, config):
@@ -21,6 +25,9 @@ class MasterOrchestrator:
         self.strategies = [RollingStraddleStrategy(config, self.logger)]
         self.POLL_INTERVAL = config.get('global', {}).get('poll_interval', 30)
         self.PRIORITY = ["rolling_straddle"]
+        
+        # Timezone configuration
+        self.timezone = ZoneInfo(config.get('global', {}).get('timezone', 'Asia/Kolkata'))
 
         # EOD exit scheduling
         # Expect config keys under global.eod_exit_schedule: list of {"time": "HH:MM:SS", "pct": 5, "final": false}
@@ -34,6 +41,7 @@ class MasterOrchestrator:
                 t = dt_time(hh, mm, ss)
             except Exception:
                 # skip invalid entries
+                logger.warning(f"Invalid EOD schedule time format: {tstr}")
                 continue
             self._processed_schedule.append({
                 "id": idx,
@@ -55,8 +63,8 @@ class MasterOrchestrator:
         executed_ids = self._executed_for_date.get(today, set())
         if sched_item['id'] in executed_ids:
             return False
-        # build scheduled datetime for today
-        scheduled_dt = datetime.combine(today, sched_item['time'])
+        # build scheduled datetime for today (timezone-aware)
+        scheduled_dt = datetime.combine(today, sched_item['time'], tzinfo=self.timezone)
         # If scheduled_dt is in the future - don't run.
         if now_dt < scheduled_dt:
             return False
@@ -79,45 +87,44 @@ class MasterOrchestrator:
         Iterate strategies and force them to close positions.
         For each strategy create exit orders using strategy.exit(...) and send with retry logic.
         """
+        logger.info(f"Performing EOD exit: {tag_prefix}")
+        
         for strat in self.strategies:
             open_positions = strat.get_open_positions()
             if not open_positions:
+                logger.info(f"No open positions for {strat.name}")
                 continue
+            
             # Use the strategy's exit helper to build orders that close all open positions
             try:
                 orders = strat.exit(None, None)
             except Exception as e:
-                print(f"[MasterOrchestrator] Error building exit orders for {strat.name}: {e}")
+                logger.error(f"Error building exit orders for {strat.name}: {e}")
                 continue
             if not orders:
+                logger.warning(f"No exit orders generated for {strat.name}")
                 continue
 
-            # attempt to send orders with retries
-            attempt = 1
-            success = False
-            while attempt <= self.exit_retry_count and not success:
-                any_ok, results = self.exec.send_orders(orders, tag=f"{tag_prefix}-{int(time.time())}")
-                # results is a list of dicts; treat any_ok True if any order produced status 200 or simulated
-                # Log a line per order similar to your requested format
-                ts = datetime.now().strftime("%H:%M:%S")
-                for r in results:
-                    order = r.get("order", {})
-                    action = order.get("action", "")
-                    instr = order.get("instrument", "")
-                    lots = order.get("lots", order.get("quantity", 1))
-                    url = getattr(self.exec, "webhook_url", None) or "N/A"
-                    status = r.get("status")
-                    simulated = r.get("simulated", False)
-                    status_str = status if status is not None else ("SIMULATED" if simulated else "ERR")
-                    print(f"[{ts}] 🔹 {tag_prefix} (attempt {attempt}) | {instr} {action} {lots} | URL={url} | Status={status_str}")
-                if any_ok:
-                    success = True
-                else:
-                    attempt += 1
-                    time.sleep(self.exit_retry_delay)
+            # attempt to send orders with retries (handled by ExecutionAdapter)
+            any_ok, results = self.exec.send_orders(orders, tag=f"{tag_prefix}-{int(time.time())}")
+            
+            # Log results
+            now_tz = datetime.now(self.timezone)
+            ts = now_tz.strftime("%H:%M:%S")
+            for r in results:
+                order = r.get("order", {})
+                action = order.get("action", "")
+                instr = order.get("instrument", "")
+                lots = order.get("lots", order.get("quantity", 1))
+                url = getattr(self.exec, "webhook_url", None) or "N/A"
+                status = r.get("status")
+                simulated = r.get("simulated", False)
+                status_str = status if status is not None else ("SIMULATED" if simulated else "ERR")
+                logger.info(f"[{ts}] 🔹 {tag_prefix} | {instr} {action} {lots} | URL={url} | Status={status_str}")
 
     def _log_order_results(self, results, tag_prefix="", attempt=1):
-        ts = datetime.now().strftime("%H:%M:%S")
+        now_tz = datetime.now(self.timezone)
+        ts = now_tz.strftime("%H:%M:%S")
         for r in results:
             order = r.get("order", {})
             action = order.get("action", "")
@@ -126,27 +133,37 @@ class MasterOrchestrator:
             url = getattr(self.exec, "webhook_url", None) or "N/A"
             status = r.get("status")
             simulated = r.get("simulated", False)
+            order_id = r.get("order_id", "N/A")
             status_str = status if status is not None else ("SIMULATED" if simulated else "ERR")
-            print(f"[{ts}] 🔹 {tag_prefix} (attempt {attempt}) | {instr} {action} {lots} | URL={url} | Status={status_str}")
+            logger.info(f"[{ts}] 🔹 {tag_prefix} | {instr} {action} {lots} | OrderID={order_id} | Status={status_str}")
 
     def run(self):
-        print("Starting orchestrator loop...")
+        logger.info("Starting orchestrator loop...")
         while True:
             try:
-                now = datetime.now()
+                # Use timezone-aware datetime
+                now = datetime.now(self.timezone)
+                
+                # Check emergency mode
+                if self.risk.is_emergency_mode():
+                    logger.critical("System in emergency mode - performing emergency close")
+                    self._perform_eod_exit(tag_prefix="emergency-exit")
+                    logger.critical("Emergency close complete - stopping orchestrator")
+                    return
+                
                 # Check EOD schedule and run entries that are due
                 for sched in self._processed_schedule:
                     if self._should_run_schedule_entry(sched, now):
                         pct = sched.get('pct')
                         ts = now.strftime("%H:%M:%S")
                         pct_str = f"[PCT={pct}%]" if pct is not None else ""
-                        print(f"[{ts}] {pct_str} 🛑 Exit time reached. Closing positions...")
+                        logger.info(f"[{ts}] {pct_str} 🛑 Exit time reached. Closing positions...")
                         # perform actual exit orders and logging
                         self._perform_eod_exit(tag_prefix="exit-eod")
                         # mark executed so we don't run again today
                         self._mark_schedule_executed(sched, now)
                         if sched.get('final'):
-                            print(f"[{now.strftime('%H:%M:%S')}] ✅ Market closed. Exiting multi-strategy loop.")
+                            logger.info(f"[{ts}] ✅ Market closed. Exiting multi-strategy loop.")
                             return
 
                 # Normal polling cycle
@@ -163,12 +180,19 @@ class MasterOrchestrator:
                 try:
                     self.vol_filter.update(snapshot)
                     vol_ok, vol_reason = self.vol_filter.is_vol_ok(snapshot)
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Volatility filter error: {e}")
                     vol_ok, vol_reason = True, "vol_filter error or not configured"
 
-                # Entry: only if no main strategy in position
+                # Entry: only if no main strategy in position and risk checks pass
                 any_in_position = any(getattr(s, "in_position", False) for s in self.strategies)
                 candidates = []
+                
+                # Check daily loss limit before considering new entries
+                if not self.risk.check_daily_loss_limit():
+                    logger.warning("Daily loss limit breached - no new entries allowed")
+                    vol_ok = False
+                
                 if vol_ok and not any_in_position:
                     for strat in self.strategies:
                         can_enter, reason, params = strat.can_enter(snapshot, snapshot.get('regime'))
@@ -188,38 +212,55 @@ class MasterOrchestrator:
                 if chosen:
                     strat_name, strat, params = chosen
                     sizing = self.risk.compute_size(strat_name, snapshot)
-                    params.update(sizing)
-                    orders = strat.enter(snapshot, params)
-                    success, resp = self.exec.send_orders(orders, tag=f"{strat_name}-{int(time.time())}")
-                    # log each order result in the requested format
-                    self._log_order_results(resp if isinstance(resp, list) else (resp or []), tag_prefix=strat_name, attempt=1)
-                    self.logger.log_entry(strat_name, snapshot, params, orders, resp)
+                    
+                    if sizing is None:
+                        logger.warning(f"Risk check failed for {strat_name} - skipping entry")
+                    else:
+                        params.update(sizing)
+                        orders = strat.enter(snapshot, params)
+                        
+                        # Check margin before sending orders
+                        if not self.risk.check_margin_requirement(orders, snapshot):
+                            logger.error("Insufficient margin - skipping entry")
+                        else:
+                            success, resp = self.exec.send_orders(orders, tag=f"{strat_name}-{int(time.time())}")
+                            # log each order result in the requested format
+                            self._log_order_results(resp if isinstance(resp, list) else (resp or []), tag_prefix=strat_name)
+                            self.logger.log_entry(strat_name, snapshot, params, orders, resp)
 
                 # Manage open positions and call on_tick -> may return exits/orders
                 for strat in self.strategies:
-                    for pos in strat.get_open_positions():
+                    positions_copy = strat.get_open_positions()  # Get copy
+                    for pos in positions_copy:
                         action = strat.on_tick(snapshot, pos)
                         if action:
                             reason = action.get("reason")
                             if reason == "roll":
                                 orders = action.get("orders", [])
                                 any_ok, results = self.exec.send_orders(orders, tag=f"roll-{int(time.time())}")
-                                self._log_order_results(results, tag_prefix="roll", attempt=1)
+                                self._log_order_results(results, tag_prefix="roll")
                                 self.logger.log_action(strat.name, "roll", orders)
                             elif reason in ("add_otm", "remove_otm", "otm_exit"):
                                 orders = action.get("orders", [])
                                 any_ok, results = self.exec.send_orders(orders, tag=f"{reason}-{int(time.time())}")
-                                self._log_order_results(results, tag_prefix=reason, attempt=1)
+                                self._log_order_results(results, tag_prefix=reason)
                                 self.logger.log_action(strat.name, reason, orders)
                             elif reason in ("stoploss", "target"):
                                 orders = strat.exit(pos, action.get("positions") or [])
                                 any_ok, results = self.exec.send_orders(orders, tag=f"exit-{int(time.time())}")
-                                self._log_order_results(results, tag_prefix="exit", attempt=1)
+                                self._log_order_results(results, tag_prefix="exit")
                                 self.logger.log_exit(pos, action)
+                                
+                                # Update PnL tracking
+                                mtm = pos.get("mtm", 0.0)
+                                if self.risk.update_pnl(mtm):
+                                    logger.critical("Daily loss limit breached during trade - entering emergency mode")
+                                    self.risk.enter_emergency_mode("Daily loss limit exceeded")
+                
                 time.sleep(self.POLL_INTERVAL)
             except KeyboardInterrupt:
-                print("Orchestrator stopped by user.")
+                logger.info("Orchestrator stopped by user.")
                 break
             except Exception as e:
-                print("Orchestrator loop exception:", e)
+                logger.error(f"Orchestrator loop exception: {e}", exc_info=True)
                 time.sleep(self.POLL_INTERVAL)
