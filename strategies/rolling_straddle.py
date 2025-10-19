@@ -1,6 +1,6 @@
 # strategies/rolling_straddle.py
 from strategies.base_strategy import BaseStrategy
-import datetime
+from datetime import datetime, timedelta
 import re
 import logging
 import copy
@@ -8,14 +8,15 @@ from typing import Optional, Dict, Any
 
 _module_logger = logging.getLogger(__name__)
 
+
 class RollingStraddleStrategy(BaseStrategy):
     def __init__(self, config, logger=None):
         super().__init__(config, logger)
         self.name = "rolling_straddle"
-        self.open_positions = []        # list of dicts: instrument, side, entry_price (None until filled), quantity, state ("pending"|"filled")
+        self.open_positions = []        # list of dicts: instrument, side, entry_price (None until filled), quantity, state ("requested"|"filled")
         self.otm_legs = {}             # instrument -> {"state": "requested"|"filled", "requested_price": float, "entry_price": float}
         self.last_atm: Optional[int] = None
-        self.last_roll_time: Optional[datetime.datetime] = None
+        self.last_roll_time: Optional[datetime] = None
         self.in_position: bool = False
         self.has_otm_wings: bool = False
         self.baseline_ce_ltp: Optional[float] = None
@@ -36,7 +37,7 @@ class RollingStraddleStrategy(BaseStrategy):
         self.TARGET_PER_LOT = config.get("rolling_straddle", {}).get("target_per_lot", 10000)
         self.ROLL_PCT = config.get("rolling_straddle", {}).get("roll_pct", 5.0)
         self.BUFFER = config.get("BUFFER", 10)
-        self.HOLD_TIME = datetime.timedelta(minutes=1)
+        self.HOLD_TIME = timedelta(minutes=1)
         self.SYMBOL = config.get("SYMBOL", "SENSEX")
         self.EXPIRY_DATE = config["upstox"]["expiry_date"]
         self.OTM_WING_FACTOR = config.get("iron_fly", {}).get("wing_factor", 1.0)
@@ -73,7 +74,7 @@ class RollingStraddleStrategy(BaseStrategy):
             {"instrument": pe_instr, "side": "S", "entry_price": None, "requested_price": pe_ltp, "quantity": self.MESSAGE_LOTS, "mtm": 0.0, "state": "requested"}
         ]
         self.last_atm = atm_strike
-        self.last_roll_time = datetime.datetime.datetime.now() if hasattr(datetime, "datetime") else datetime.datetime.now()
+        self.last_roll_time = datetime.now()
         self.in_position = True
         self.baseline_ce_ltp = ce_ltp
         self.baseline_pe_ltp = pe_ltp
@@ -82,7 +83,7 @@ class RollingStraddleStrategy(BaseStrategy):
 
         self.logger.info(f"[RollingStraddle] Requested straddle: ATM={atm_strike}, CE_req={ce_ltp:.2f}, PE_req={pe_ltp:.2f}, regime={regime}")
 
-        # Return order payloads — ExecutionAdapter should send them and later call confirm_fill(...)
+        # Return order payloads — ExecutionAdapter should send them and later call confirm_fill(...).
         return [
             {"action": "sell", "instrument": ce_instr, "lots": self.MESSAGE_LOTS},
             {"action": "sell", "instrument": pe_instr, "lots": self.MESSAGE_LOTS}
@@ -124,7 +125,7 @@ class RollingStraddleStrategy(BaseStrategy):
         ce_change_pct = ((ce_ltp - (self.baseline_ce_ltp or ce_ltp)) / (self.baseline_ce_ltp or 1.0)) * 100.0
         pe_change_pct = ((pe_ltp - (self.baseline_pe_ltp or pe_ltp)) / (self.baseline_pe_ltp or 1.0)) * 100.0
         buffer_ok = abs(snapshot.get("spot", 0) - (self.last_atm or 0)) >= self.BUFFER if self.last_atm else True
-        hold_ok = (datetime.datetime.datetime.now() - self.last_roll_time) >= self.HOLD_TIME if self.last_roll_time else True
+        hold_ok = (datetime.now() - self.last_roll_time) >= self.HOLD_TIME if self.last_roll_time else True
         atm_changed = (snapshot.get("atm_strike") != self.last_atm)
         triggered_ce = abs(ce_change_pct) >= self.ROLL_PCT
         triggered_pe = abs(pe_change_pct) >= self.ROLL_PCT
@@ -149,7 +150,7 @@ class RollingStraddleStrategy(BaseStrategy):
                 self.logger.info(f"[RollingStraddle] Rolling PE: {self.last_atm} -> {snapshot['atm_strike']}, change={pe_change_pct:.2f}%")
                 self.last_pe_action = "S"
             self.last_atm = snapshot.get("atm_strike")
-            self.last_roll_time = datetime.datetime.datetime.now()
+            self.last_roll_time = datetime.now()
             self.baseline_ce_ltp = ce_ltp
             self.baseline_pe_ltp = pe_ltp
             return {"reason": "roll", "orders": orders}
